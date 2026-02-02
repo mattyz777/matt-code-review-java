@@ -4,6 +4,8 @@ target/
 !**/src/test/**/target/
 .kotlin
 
+src/main/resources/application-security.yaml
+
 ### IntelliJ IDEA ###
 .idea
 .idea/**

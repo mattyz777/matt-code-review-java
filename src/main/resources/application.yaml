@@ -1,0 +1,6 @@
+spring:
+  profiles:
+    include: "security"
+glm:
+  api:
+    key: ""
