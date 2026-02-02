@@ -5,7 +5,10 @@ import com.github.javaparser.JavaParser;
 import com.github.javaparser.ParseResult;
 import com.github.javaparser.Range;
 import com.github.javaparser.ast.CompilationUnit;
+import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
+import com.github.javaparser.ast.body.FieldDeclaration;
 import com.github.javaparser.ast.body.MethodDeclaration;
+import lombok.Value;
 import lombok.extern.slf4j.Slf4j;
 import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.api.errors.GitAPIException;
@@ -20,12 +23,14 @@ import java.util.*;
 
 @Slf4j
 @Service
-public class CodeReviewService {
+public class GitService {
 
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+
+    private static final List<String> SKIP_PREFIXES = List.of("diff ", "index ", "--- ", "+++ ", "\\ No newline");
+
     private static final String FIELD_FILE = "file";
     private static final String FIELD_CODE = "code";
-    private static final String FIELD_DIFF = "diff";
 
     public String process(String repoPath, String targetBranch, String sourceBranch)
             throws IOException, GitAPIException {
@@ -113,9 +118,7 @@ public class CodeReviewService {
                 continue;
             }
 
-            if (current == null || line.startsWith("diff ") || line.startsWith("index ")
-                    || line.startsWith("--- ") || line.startsWith("+++ ")
-                    || line.startsWith("\\ No newline")) {
+            if (current == null || SKIP_PREFIXES.stream().anyMatch(line::startsWith)) {
                 continue;
             }
 
@@ -132,6 +135,71 @@ public class CodeReviewService {
         return new ParsedDiff(blocks);
     }
 
+
+    private void collectChangedMethods(FileDiff diff, CompilationUnit cu, List<Map<String, Object>> codeBlocks) {
+        cu.findAll(MethodDeclaration.class).forEach(method -> {
+            if (method.getRange().isEmpty()) {
+                return;
+            }
+            Range r = method.getRange().get();
+
+            if (diff.parsed.touchesRange(r.begin.line, r.end.line)) {
+                codeBlocks.add(Map.of(
+                        "type", "method",
+                        "name", method.getNameAsString(),
+                        "code", method.toString()
+                ));
+            }
+        });
+    }
+
+    private void collectChangedFields(FileDiff diff, CompilationUnit cu, List<Map<String, Object>> codeBlocks) {
+        cu.findAll(FieldDeclaration.class).forEach(field -> {
+            if (field.getRange().isEmpty()) {
+                return;
+            }
+            Range r = field.getRange().get();
+
+            if (diff.parsed.touchesRange(r.begin.line, r.end.line)) {
+                codeBlocks.add(Map.of(
+                        "type", "field",
+                        "code", field.toString()
+                ));
+            }
+        });
+    }
+
+    private void collectChangedImports(FileDiff diff, CompilationUnit cu, List<Map<String, Object>> codeBlocks) {
+        cu.getImports().forEach(impt -> {
+            if (impt.getRange().isEmpty()) return;
+            Range r = impt.getRange().get();
+
+            if (diff.parsed.touchesRange(r.begin.line, r.end.line)) {
+                codeBlocks.add(Map.of(
+                        "type", "import",
+                        "code", impt.toString()
+                ));
+            }
+        });
+    }
+
+    private void collectChangedClassAnnotations(FileDiff diff, CompilationUnit cu, List<Map<String, Object>> codeBlocks) {
+        cu.findAll(ClassOrInterfaceDeclaration.class).forEach(clazz -> {
+            clazz.getAnnotations().forEach(anno -> {
+                if (anno.getRange().isEmpty()) {
+                    return;
+                }
+                Range r = anno.getRange().get();
+
+                if (diff.parsed.touchesRange(r.begin.line, r.end.line)) {
+                    codeBlocks.add(Map.of(
+                            "type", "class-annotation",
+                            "code", anno.toString()
+                    ));
+                }
+            });
+        });
+    }
 
     private String prepareCodeForLLMReview(String repoPath, List<FileDiff> diffs) throws IOException {
         List<Map<String, Object>> payload = new ArrayList<>();
@@ -154,110 +222,37 @@ public class CodeReviewService {
             CompilationUnit cu = result.getResult().get();
             List<Map<String, Object>> codeBlocks = new ArrayList<>();
 
-            // Changed methods
-            for (MethodDeclaration method : cu.findAll(MethodDeclaration.class)) {
-                if (method.getRange().isEmpty()) continue;
-                Range r = method.getRange().get();
-
-                if (diff.parsed.touchesRange(r.begin.line, r.end.line)) {
-                    codeBlocks.add(Map.of(
-                            "type", "method",
-                            "name", method.getNameAsString(),
-                            "code", method.toString()
-                    ));
-                }
-            }
-
-            // Changed fields
-            cu.findAll(com.github.javaparser.ast.body.FieldDeclaration.class)
-                    .forEach(field -> {
-                        if (field.getRange().isEmpty()) return;
-                        Range r = field.getRange().get();
-
-                        if (diff.parsed.touchesRange(r.begin.line, r.end.line)) {
-                            codeBlocks.add(Map.of(
-                                    "type", "field",
-                                    "code", field.toString()
-                            ));
-                        }
-                    });
-
-            // Changed imports
-            cu.getImports().forEach(impt -> {
-                if (impt.getRange().isEmpty()) return;
-                Range r = impt.getRange().get();
-
-                if (diff.parsed.touchesRange(r.begin.line, r.end.line)) {
-                    codeBlocks.add(Map.of(
-                            "type", "import",
-                            "code", impt.toString()
-                    ));
-                }
-            });
-
-            // 4️⃣ Changed class-level annotations
-            cu.findAll(com.github.javaparser.ast.body.ClassOrInterfaceDeclaration.class)
-                    .forEach(clazz -> {
-                        clazz.getAnnotations().forEach(anno -> {
-                            if (anno.getRange().isEmpty()) return;
-                            Range r = anno.getRange().get();
-
-                            if (diff.parsed.touchesRange(r.begin.line, r.end.line)) {
-                                codeBlocks.add(Map.of(
-                                        "type", "class-annotation",
-                                        "code", anno.toString()
-                                ));
-                            }
-                        });
-                    });
+            collectChangedMethods(diff, cu, codeBlocks);
+            collectChangedFields(diff, cu, codeBlocks);
+            collectChangedImports(diff, cu, codeBlocks);
+            collectChangedClassAnnotations(diff, cu, codeBlocks);
 
             if (!codeBlocks.isEmpty()) {
-                payload.add(Map.of(
-                        FIELD_FILE, diff.file,
-                        FIELD_CODE, codeBlocks
-                ));
+                payload.add(Map.of(FIELD_FILE, diff.file, FIELD_CODE, codeBlocks));
             } else {
-                log.info("Changes in '{}' are whitespace-only after filtering.", diff.file);
+                log.info("Changes in '{}' are whitespace-only.", diff.file);
             }
         }
 
         return OBJECT_MAPPER.writeValueAsString(payload);
     }
 
+    @Value
     static class FileDiff {
-        final String file;
-        final ParsedDiff parsed;
-
-        FileDiff(String file, ParsedDiff parsed) {
-            this.file = file;
-            this.parsed = parsed;
-        }
+        String file;
+        ParsedDiff parsed;
     }
 
+    @Value
     static class ParsedDiff {
-        final List<CodeChangeBlock> blocks;
+        List<CodeChangeBlock> blocks;
 
-        ParsedDiff(List<CodeChangeBlock> blocks) {
-            this.blocks = blocks;
-        }
-
-        boolean isOnlyWhitespace() {
+        public boolean isOnlyWhitespace() {
             return blocks.stream().allMatch(CodeChangeBlock::isOnlyWhitespace);
         }
 
-        boolean touchesRange(int start, int end) {
+        public boolean touchesRange(int start, int end) {
             return blocks.stream().anyMatch(h -> h.touches(start, end));
-        }
-
-        Map<String, Object> toMinimalDiff() {
-            List<Map<String, Object>> hunksOut = new ArrayList<>();
-            for (CodeChangeBlock h : blocks) {
-                hunksOut.add(Map.of(
-                        "added", h.nonEmptyAdded(),
-                        "removed", h.nonEmptyRemoved()
-                ));
-            }
-            return Map.of("hunks", hunksOut);
         }
     }
 
@@ -273,14 +268,6 @@ public class CodeReviewService {
         boolean isOnlyWhitespace() {
             return added.values().stream().allMatch(String::isBlank)
                     && removed.values().stream().allMatch(String::isBlank);
-        }
-
-        List<String> nonEmptyAdded() {
-            return added.values().stream().filter(s -> !s.isBlank()).toList();
-        }
-
-        List<String> nonEmptyRemoved() {
-            return removed.values().stream().filter(s -> !s.isBlank()).toList();
         }
     }
 }
