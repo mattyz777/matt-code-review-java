@@ -38,6 +38,7 @@ public class GlmLLMService {
 
             HttpEntity<Map<String, Object>> entity = new HttpEntity<>(request, headers);
 
+            log.info("calling llm api");
             ResponseEntity<String> resp = restTemplate.exchange(
                     apiUrl,
                     HttpMethod.POST,
@@ -65,62 +66,57 @@ public class GlmLLMService {
         );
     }
 
-    private String buildUserPrompt(String payloadJson) {
-        return """
-                Review the following changed code blocks:
-
-                %s
-
-                Return your review strictly in the following JSON format:
-
-                {
-                  "summary": "...",
-                  "issues": [
-                    {
-                      "file": "...",
-                      "type": "bug | security | performance | correctness | maintainability",
-                      "severity": "low | medium | high | critical",
-                      "location": "...",
-                      "message": "...",
-                      "suggestion": "..."
-                    }
-                  ]
-                }
-                """.formatted(payloadJson);
-    }
-
     private String systemPrompt() {
         return """
-                You are a senior backend engineer and static analysis reviewer.
+        You are a code review engine.
 
-                You will receive structured Java code blocks extracted from Git diffs.
-                Each block represents a complete semantic unit (method, field, import, annotation).
+        You MUST return a single valid JSON object and NOTHING ELSE.
+        Do not include explanations, markdown, or code fences.
+        If the output is not valid JSON, it will be rejected.
 
-                Your task:
-                1. Review for:
-                   - Bugs
-                   - Logic errors
-                   - Concurrency issues
-                   - Security risks
-                   - API misuse
-                   - Performance problems
-                   - Maintainability issues
-
-                2. DO NOT:
-                   - Comment on formatting or style unless it affects correctness
-                   - Suggest renaming unless meaning is unclear
-                   - Request unrelated refactors
-
-                3. Output MUST be valid JSON in the schema requested.
-                If no issues are found, return:
-                {
-                  "summary": "No issues found.",
-                  "issues": []
-                }
-                """;
+        Follow exactly the schema provided by the user.
+        """;
     }
 
-    // ---------------- response parsing ----------------
+    private String buildUserPrompt(String payloadJson) {
+        return """
+        Review the following changed code blocks:
+
+        %s
+
+        Return ONLY a JSON object in this schema:
+
+        {
+          "summary": {
+            "critical": number,
+            "high": number,
+            "medium": number,
+            "low": number
+          },
+          "issues": [
+            {
+              "summary": string,
+              "file": string,
+              "type": "bug | security | performance | correctness | maintainability",
+              "severity": "low | medium | high | critical",
+              "location": string,
+              "message": string,
+              "suggestion": string
+            }
+          ]
+        }
+
+        Rules:
+        - Output must be valid JSON.
+        - Do not include markdown, comments, or extra text.
+        - If no issues exist, return:
+
+        {
+          "summary": { "critical": 0, "high": 0, "medium": 0, "low": 0 },
+          "issues": []
+        }
+        """.formatted(payloadJson);
+    }
 
     private String extractAssistantContent(String rawResponse) throws Exception {
         // GLM response format:
