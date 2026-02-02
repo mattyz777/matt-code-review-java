@@ -45,7 +45,9 @@ public class GlmLLMService {
                     String.class
             );
 
-            return extractAssistantContent(resp.getBody());
+            String result = extractAssistantContent(resp.getBody());
+            log.info("LLM review result: {}", result);
+            return result;
         } catch (Exception e) {
             throw new RuntimeException("LLM review failed", e);
         }

@@ -39,7 +39,9 @@ public class GitService {
         try (Git git = new Git(repo)) {
             git.fetch().call();
             List<FileDiff> diffs = gitDiff(repo, targetBranch, sourceBranch);
-            return prepareCodeForLLMReview(repoPath, diffs);
+            String result = prepareCodeForLLMReview(repoPath, diffs);
+            log.info("Result: {}", result);
+            return result;
         }
     }
 
